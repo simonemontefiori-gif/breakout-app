@@ -1,0 +1,5 @@
+-e streamlit
+yfinance
+pandas
+numpy
+requests
