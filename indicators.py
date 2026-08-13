@@ -115,6 +115,114 @@ def recent_swing_low(df: pd.DataFrame, lookback: int = 10) -> float:
     return float(df["Low"].tail(lookback).min())
 
 
+def calc_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Average True Range - usato per calcolare stop loss più precisi/stretti."""
+    high, low, close = df["High"], df["Low"], df["Close"]
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+    if atr.empty or pd.isna(atr.iloc[-1]):
+        return np.nan
+    return float(atr.iloc[-1])
+
+
+def calc_drawdown_pct(df: pd.DataFrame, lookback: int = 252) -> float:
+    """
+    Drawdown percentuale del prezzo attuale rispetto al massimo degli ultimi
+    `lookback` periodi (default 252 = ~1 anno di borsa). Valore positivo = quanto
+    il titolo è sceso dal massimo (es. 45 = -45% dal massimo).
+    """
+    window = df.tail(lookback)
+    if window.empty:
+        return np.nan
+    high_period = window["High"].max()
+    current = df["Close"].iloc[-1]
+    if high_period <= 0:
+        return np.nan
+    return float((high_period - current) / high_period * 100)
+
+
+def calc_deceleration(df: pd.DataFrame, window: int = 20) -> dict:
+    """
+    Confronta il tasso di variazione (ROC) del prezzo nella finestra recente
+    vs quella precedente, per rilevare se la discesa sta rallentando.
+    roc_recent più alto (meno negativo) di roc_prior = discesa in decelerazione.
+    """
+    close = df["Close"]
+    if len(close) < window * 2 + 1:
+        return dict(roc_recent=np.nan, roc_prior=np.nan, decelerating=False)
+
+    recent = close.tail(window)
+    prior = close.tail(window * 2).head(window)
+
+    roc_recent = float((recent.iloc[-1] - recent.iloc[0]) / recent.iloc[0] * 100)
+    roc_prior = float((prior.iloc[-1] - prior.iloc[0]) / prior.iloc[0] * 100)
+
+    decelerating = roc_recent > roc_prior  # meno negativo = rallentamento della discesa
+    return dict(roc_recent=round(roc_recent, 2), roc_prior=round(roc_prior, 2), decelerating=decelerating)
+
+
+def calc_relative_strength(df: pd.DataFrame, benchmark_df: pd.DataFrame, window: int = 60) -> float:
+    """
+    Forza relativa rispetto a un benchmark (es. indice di riferimento) sugli ultimi
+    `window` periodi. Valore positivo = il titolo sta recuperando più velocemente
+    del mercato/indice; negativo = sta recuperando più lentamente (segnale più debole).
+    """
+    if benchmark_df is None or len(benchmark_df) < window or len(df) < window:
+        return np.nan
+    stock_ret = (df["Close"].iloc[-1] / df["Close"].iloc[-window] - 1) * 100
+    bench_ret = (benchmark_df["Close"].iloc[-1] / benchmark_df["Close"].iloc[-window] - 1) * 100
+    return round(float(stock_ret - bench_ret), 2)
+
+
+def calc_distance_from_52w_low(df: pd.DataFrame, lookback: int = 252) -> float:
+    """Distanza percentuale del prezzo attuale dal minimo delle ultime `lookback` candele."""
+    window = df.tail(lookback)
+    if window.empty:
+        return np.nan
+    low_period = window["Low"].min()
+    current = df["Close"].iloc[-1]
+    if low_period <= 0:
+        return np.nan
+    return round(float((current - low_period) / low_period * 100), 2)
+
+
+def days_since_breakout(df: pd.DataFrame, range_high: float) -> int:
+    """Quanti giorni fa il prezzo ha chiuso per la prima volta sopra range_high (utile per capire se il segnale è 'fresco')."""
+    closes = df["Close"]
+    above = closes > range_high
+    if not above.any():
+        return -1
+    first_above_idx = above.idxmax()
+    return int((df.index[-1] - first_above_idx).days)
+
+
+def detect_base(df: pd.DataFrame, lookback: int = 25, exclude_today: bool = True,
+                 max_range_pct: float = 15.0) -> dict:
+    """
+    Cerca una fase di lateralizzazione/base nelle ultime `lookback` candele
+    (esclusa quella odierna, che potrebbe essere il giorno della rottura).
+    Ritorna il massimo e il minimo della base se il range è abbastanza stretto
+    da poter essere considerato consolidamento (non trend direzionale forte).
+    """
+    window = df.tail(lookback + 1)
+    base_window = window.iloc[:-1] if exclude_today else window
+    if len(base_window) < lookback * 0.6:
+        return dict(valid=False)
+
+    range_high = float(base_window["High"].max())
+    range_low = float(base_window["Low"].min())
+    if range_low <= 0:
+        return dict(valid=False)
+
+    range_pct = (range_high - range_low) / range_low * 100
+    valid = range_pct <= max_range_pct
+
+    return dict(valid=valid, range_high=range_high, range_low=range_low, range_pct=round(range_pct, 2))
+
+
 def recent_resistance_levels(df: pd.DataFrame, lookback: int = 90, n_levels: int = 2) -> list:
     """
     Individua i massimi locali più rilevanti sopra il prezzo corrente

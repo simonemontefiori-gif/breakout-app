@@ -1,5 +1,5 @@
 """
-Invio alert Telegram per segnali CONFERMATO.
+Invio alert Telegram per segnali CONFERMATO della strategia "Inversione dopo forte ribasso".
 Da integrare con il bot Telegram già esistente (stesso token/chat_id in uso
 per le morning briefing).
 """
@@ -8,28 +8,29 @@ import requests
 
 
 def format_signal_message(sig: dict) -> str:
-    """Formatta un segnale in un messaggio Telegram leggibile."""
     if sig["stato"] != "CONFERMATO":
         return None
 
     lines = [
-        f"🟢 BREAKOUT CONFERMATO — {sig['ticker']}",
+        f"🟢 INVERSIONE CONFERMATA — {sig['ticker']}",
         "",
         f"Prezzo attuale: {sig['prezzo']}",
+        f"Drawdown dal massimo: -{sig['drawdown_pct']}%",
         f"POC: {sig['poc']}",
+        f"Ampiezza base: {sig['base_range_pct']}%",
         f"Volume: {sig['volume_ratio']}x media 20gg",
-        f"ADX: {sig['adx']}",
         "",
         f"📍 Entry: {sig['entry']}",
         f"🛑 Stop: {sig['stop']}",
         f"🎯 TP1: {sig['tp1']} (R:R {sig['rr_tp1']})",
         f"🎯 TP2: {sig['tp2']} (R:R {sig['rr_tp2']})",
+        "",
+        f"{sig.get('note', '')}",
     ]
     return "\n".join(lines)
 
 
 def send_telegram_message(bot_token: str, chat_id: str, message: str):
-    """Invia un messaggio al bot Telegram esistente."""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message}
     try:
@@ -42,7 +43,6 @@ def send_telegram_message(bot_token: str, chat_id: str, message: str):
 
 
 def send_signals(signals_df, bot_token: str, chat_id: str):
-    """Invia un alert per ogni segnale CONFERMATO in un DataFrame di risultati."""
     if signals_df is None or signals_df.empty:
         return
     confermati = signals_df[signals_df["stato"] == "CONFERMATO"]

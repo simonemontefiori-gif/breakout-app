@@ -1,7 +1,6 @@
 """
-Motore di backtest: simula l'applicazione dei criteri di screener.py
-su dati storici, per misurare win rate ed expectancy PRIMA di usare
-il sistema con capitale reale (vedi sezione 6 della spec).
+Motore di backtest per la strategia "Inversione dopo forte ribasso".
+Scorre la storia giorno per giorno e simula l'esito di ogni segnale CONFERMATO.
 """
 
 import numpy as np
@@ -10,30 +9,35 @@ from screener import evaluate_ticker, DEFAULT_PARAMS
 
 
 def backtest_ticker(ticker: str, df: pd.DataFrame, params: dict = None,
-                     min_history: int = 100, max_hold_days: int = 60) -> pd.DataFrame:
+                     min_history: int = 280, max_hold_days: int = 90,
+                     step: int = 3) -> pd.DataFrame:
     """
-    Scorre la storia di un ticker giorno per giorno, generando segnali
-    CONFERMATO come se lo screener girasse ogni giorno, e simula l'esito
-    (stop colpito, TP1, TP2, o chiusura per timeout).
-
-    Ritorna un DataFrame con una riga per ogni trade simulato.
+    Scorre la storia di un ticker (con passo `step` giorni per velocizzare,
+    dato che i criteri — drawdown, base — non cambiano bruscamente giorno per
+    giorno) generando segnali CONFERMATO come farebbe lo screener live, e
+    simula l'esito (stop, target, o timeout).
     """
     params = {**DEFAULT_PARAMS, **(params or {})}
     trades = []
 
-    for i in range(min_history, len(df) - 1):
+    for i in range(min_history, len(df) - 1, step):
         window = df.iloc[:i + 1]
-        sig = evaluate_ticker(ticker, window, params)
+        try:
+            sig = evaluate_ticker(ticker, window, params)
+        except Exception:
+            continue
 
-        if sig is None or not sig.stato.startswith("CONFERMATO") or sig.stato.endswith("insufficiente)"):
+        if sig is None or not sig.stato.startswith("CONFERMATO") or "insufficiente" in sig.stato:
             continue
         if sig.entry is None or sig.stop is None:
             continue
 
-        entry, stop, tp1, tp2 = sig.entry, sig.stop, sig.tp1, sig.tp2
+        entry, stop = sig.entry, sig.stop
+        target_note = sig.note or ""
+        # ricalcola il target realmente usato dal segnale (quello con R:R >= soglia)
+        tp1, tp2 = sig.tp1, sig.tp2
         entry_date = df.index[i]
 
-        # Simula l'esito nei giorni successivi
         future = df.iloc[i + 1: i + 1 + max_hold_days]
         outcome, exit_price, exit_date, days_held = "TIMEOUT", None, None, None
 
@@ -54,7 +58,7 @@ def backtest_ticker(ticker: str, df: pd.DataFrame, params: dict = None,
             days_held = len(future)
 
         if exit_price is None:
-            continue  # dati insufficienti a fine serie
+            continue
 
         pnl_pct = (exit_price - entry) / entry * 100
 
@@ -62,14 +66,13 @@ def backtest_ticker(ticker: str, df: pd.DataFrame, params: dict = None,
             ticker=ticker, entry_date=entry_date, entry=entry, stop=stop,
             tp1=tp1, tp2=tp2, exit_date=exit_date, exit_price=exit_price,
             outcome=outcome, pnl_pct=round(pnl_pct, 2), days_held=days_held,
-            volume_ratio=sig.volume_ratio, adx=sig.adx,
+            drawdown_pct=sig.drawdown_pct, volume_ratio=sig.volume_ratio,
         ))
 
     return pd.DataFrame(trades)
 
 
 def backtest_universe(price_data: dict, params: dict = None) -> pd.DataFrame:
-    """Esegue il backtest su tutti i ticker forniti e concatena i risultati."""
     all_trades = []
     for ticker, df in price_data.items():
         t = backtest_ticker(ticker, df, params)
@@ -81,10 +84,6 @@ def backtest_universe(price_data: dict, params: dict = None) -> pd.DataFrame:
 
 
 def compute_stats(trades: pd.DataFrame) -> dict:
-    """
-    Calcola le statistiche chiave del backtest (sezione 6 della spec):
-    win rate, expectancy, R:R realizzato medio.
-    """
     if trades.empty:
         return dict(n_trades=0)
 
